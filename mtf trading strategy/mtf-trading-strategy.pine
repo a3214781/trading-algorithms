@@ -1,0 +1,427 @@
+// ============================================================
+// LucidFlex 50K — Multi-Timeframe Eval Bot v6
+// ============================================================
+// RUN ON: 5-minute MNQ chart
+// USES:   Daily TF (trend) + 1H TF (momentum) + 5M (entries)
+//
+// CORE RULE: All 3 timeframes must agree on direction.
+//   Daily LONG + 1H LONG + 5M trigger = ENTER LONG
+//   Any disagreement = NO TRADE
+//
+// ENTRIES (bias direction only):
+//   A) ORB Breakout
+//   B) VWAP Pullback
+//   C) EMA Trend Touch
+//   D) Previous Day High/Low Break
+//
+// Apply to: 5-minute MNQ chart on TradingView
+// This gives you YEARS of 5m backtest data (vs 60 days in Python)
+// ============================================================
+
+//@version=5
+strategy("LucidFlex MTF Eval Bot v6",
+     overlay=true, initial_capital=25000,
+     default_qty_type=strategy.fixed, default_qty_value=2,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=0.25, slippage=1, currency=currency.USD,
+     process_orders_on_close=false, calc_on_every_tick=false)
+
+// ════════════════════════════════════════════════════════════
+// INPUTS
+// ════════════════════════════════════════════════════════════
+
+// Account
+grpA = "Account"
+i_target     = input.float(3000, "Profit Target ($)",  group=grpA)
+i_mll        = input.float(2000, "MLL ($)",            group=grpA)
+i_mllBuf     = input.float(80,   "MLL Buffer ($)",     group=grpA)
+i_dailyGoal  = input.float(625,  "Daily Goal ($)",     group=grpA)
+i_consistCap = input.float(0.49, "Consistency Cap",    group=grpA)
+i_ptVal      = input.float(2.0,  "MNQ Point Value ($)",group=grpA)
+i_maxQty     = input.int(2,      "Max Contracts",      group=grpA)
+i_maxTrades  = input.int(3,      "Max Trades/Day",     group=grpA)
+
+// TF1: Daily Trend
+grpD = "Daily Trend"
+i_dailySMA   = input.int(10, "Daily SMA Period", group=grpD)
+
+// TF2: 1H Momentum
+grpH = "1H Momentum"
+i_h1EmaF     = input.int(9,  "1H EMA Fast",  group=grpH)
+i_h1EmaS     = input.int(21, "1H EMA Slow",  group=grpH)
+
+// Entry A: ORB
+grpO = "ORB Breakout"
+i_orbOn      = input.bool(true, "Enable",       group=grpO)
+i_orbMins    = input.int(1,     "ORB Minutes",  group=grpO)
+i_orbStop    = input.float(80,  "Stop (pts)",   group=grpO)
+i_orbRR      = input.float(1.9, "RR Ratio",     group=grpO, step=0.1)
+i_orbMinR    = input.float(8,   "Min Range",    group=grpO)
+i_orbMaxR    = input.float(160, "Max Range",    group=grpO)
+
+// Entry B: VWAP Pullback
+grpV = "VWAP Pullback"
+i_vwapOn     = input.bool(true, "Enable",       group=grpV)
+i_vwapZone   = input.float(15,  "Zone (pts)",   group=grpV)
+i_vwapStop   = input.float(65,  "Stop (pts)",   group=grpV)
+i_vwapRR     = input.float(1.5, "RR Ratio",     group=grpV, step=0.1)
+
+// Entry C: EMA Touch
+grpE = "EMA Trend Touch"
+i_emaOn      = input.bool(true, "Enable",       group=grpE)
+i_emaPeriod  = input.int(21,    "EMA Period",   group=grpE)
+i_emaZone    = input.float(12,  "Zone (pts)",   group=grpE)
+i_emaStop    = input.float(45,  "Stop (pts)",   group=grpE)
+i_emaRR      = input.float(1.0, "RR Ratio",     group=grpE, step=0.1)
+
+// Entry D: Prev Day H/L
+grpP = "Prev Day H/L Break"
+i_pdhlOn     = input.bool(true, "Enable",       group=grpP)
+i_pdhlBuf    = input.float(5,   "Buffer (pts)", group=grpP)
+i_pdhlStop   = input.float(50,  "Stop (pts)",   group=grpP)
+i_pdhlRR     = input.float(1.5, "RR Ratio",     group=grpP, step=0.1)
+
+// Session
+grpS = "Session"
+i_sess       = input.session("0930-1630", "RTH Session", group=grpS)
+
+// Visual
+grpVis = "Visual"
+i_showORB    = input.bool(true, "Show ORB Range",    group=grpVis)
+i_showVWAP   = input.bool(true, "Show VWAP",         group=grpVis)
+i_showEMA    = input.bool(true, "Show 21 EMA",       group=grpVis)
+i_showPDHL   = input.bool(true, "Show Prev Day H/L", group=grpVis)
+i_showBias   = input.bool(true, "Show Bias BG",      group=grpVis)
+
+// ════════════════════════════════════════════════════════════
+// TIME HELPERS
+// ════════════════════════════════════════════════════════════
+cH = hour(time, "America/New_York")
+cM = minute(time, "America/New_York")
+cT = cH * 100 + cM
+
+isRTH    = not na(time(timeframe.period, i_sess, "America/New_York"))
+isNewDay = ta.change(time("D")) != 0
+isEOD    = cH == 15 and cM >= 50
+noEntry  = cT < 950 or cT >= 1540  // no trades before 9:50 or after 3:40
+
+orbEndT  = 930 + i_orbMins
+isORB    = isRTH and cT >= 930 and cT < orbEndT
+postORB  = isRTH and cT >= orbEndT
+
+// ════════════════════════════════════════════════════════════
+// TF1: DAILY TREND (via request.security)
+// ════════════════════════════════════════════════════════════
+// Previous day's close vs 10-day SMA on daily chart
+dailyClose = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+dailySMA   = request.security(syminfo.tickerid, "D", ta.sma(close, i_dailySMA)[1], lookahead=barmerge.lookahead_on)
+
+// +1 = LONG bias, -1 = SHORT bias
+dailyBias = dailyClose > dailySMA ? 1 : -1
+
+// ════════════════════════════════════════════════════════════
+// TF2: 1-HOUR MOMENTUM (via request.security)
+// ════════════════════════════════════════════════════════════
+h1EmaFast     = request.security(syminfo.tickerid, "60", ta.ema(close, i_h1EmaF), lookahead=barmerge.lookahead_off)
+h1EmaSlow     = request.security(syminfo.tickerid, "60", ta.ema(close, i_h1EmaS), lookahead=barmerge.lookahead_off)
+h1EmaFastPrev = request.security(syminfo.tickerid, "60", ta.ema(close, i_h1EmaF)[1], lookahead=barmerge.lookahead_off)
+
+// 1H momentum: fast > slow AND rising = bullish, fast < slow AND falling = bearish
+h1Mom = h1EmaFast > h1EmaSlow and h1EmaFast > h1EmaFastPrev ? 1 :
+         h1EmaFast < h1EmaSlow and h1EmaFast < h1EmaFastPrev ? -1 : 0
+
+// ════════════════════════════════════════════════════════════
+// THREE-TF ALIGNMENT
+// ════════════════════════════════════════════════════════════
+tfAligned    = dailyBias == h1Mom and h1Mom != 0
+allowedLong  = tfAligned and dailyBias == 1
+allowedShort = tfAligned and dailyBias == -1
+
+// ════════════════════════════════════════════════════════════
+// TF3: 5-MINUTE INDICATORS
+// ════════════════════════════════════════════════════════════
+
+// EMA on 5m
+ema5 = ta.ema(close, i_emaPeriod)
+
+// Session VWAP
+vwapVal = ta.vwap(hlc3)
+
+// ORB Range
+var float orbH = na, var float orbL = na, var bool orbSet = false
+if isNewDay
+    orbH := na, orbL := na, orbSet := false
+if isORB
+    orbH := na(orbH) ? high : math.max(orbH, high)
+    orbL := na(orbL) ? low  : math.min(orbL, low)
+if postORB and not orbSet
+    orbSet := true
+orbRange = orbSet ? orbH - orbL : 0.0
+
+// Previous Day High/Low (built-in)
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+
+// ════════════════════════════════════════════════════════════
+// DAILY STATE TRACKING
+// ════════════════════════════════════════════════════════════
+var float daySE    = strategy.equity
+var float dayPnL   = 0.0
+var int   tToday   = 0
+var float evalPnL  = 0.0
+var int   totalT   = 0
+
+// Per-strategy count today
+var int   orbCount  = 0
+var int   vwapCount = 0
+var int   emaCount  = 0
+var int   pdhlCount = 0
+
+if isNewDay
+    prev = strategy.equity - daySE
+    if prev > 0
+        evalPnL := evalPnL + prev
+    daySE    := strategy.equity
+    dayPnL   := 0.0
+    tToday   := 0
+    orbCount := 0
+    vwapCount := 0
+    emaCount := 0
+    pdhlCount := 0
+dayPnL := strategy.equity - daySE
+
+// ════════════════════════════════════════════════════════════
+// RISK GATES
+// ════════════════════════════════════════════════════════════
+dd      = strategy.initial_capital - strategy.equity
+mllR    = i_mll - dd
+proj    = evalPnL + math.max(dayPnL, 0)
+consist = proj > 0 ? math.max(dayPnL, 0) / proj : 0.0
+
+canTrade = dd < i_mll and mllR > i_mllBuf
+     and dayPnL < i_dailyGoal
+     and evalPnL < i_target
+     and tToday < i_maxTrades
+     and consist < i_consistCap
+     and not isEOD and not noEntry
+     and isRTH
+     and strategy.position_size == 0
+
+// ════════════════════════════════════════════════════════════
+// ENTRY SIGNALS (only when 3 TFs aligned + canTrade)
+// ════════════════════════════════════════════════════════════
+
+// ─── A: ORB BREAKOUT ───────────────────────────────────────
+orbLong  = false
+orbShort = false
+if i_orbOn and canTrade and orbSet and orbCount < 1
+    validRange = orbRange >= i_orbMinR and orbRange <= i_orbMaxR
+    if validRange
+        if allowedLong and close > orbH
+            orbLong := true
+        else if allowedShort and close < orbL
+            orbShort := true
+
+if orbLong
+    strategy.entry("ORB_L", strategy.long, qty=i_maxQty)
+    strategy.exit("ORB_L_X", "ORB_L", stop=close - i_orbStop, limit=close + i_orbStop * i_orbRR)
+    tToday += 1, totalT += 1, orbCount += 1
+    label.new(bar_index, low, "ORB", color=color.new(color.green, 60), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+
+if orbShort
+    strategy.entry("ORB_S", strategy.short, qty=i_maxQty)
+    strategy.exit("ORB_S_X", "ORB_S", stop=close + i_orbStop, limit=close - i_orbStop * i_orbRR)
+    tToday += 1, totalT += 1, orbCount += 1
+    label.new(bar_index, high, "ORB", color=color.new(color.green, 60), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+// ─── B: VWAP PULLBACK ─────────────────────────────────────
+orbFired = orbLong or orbShort
+vwapLong = false
+vwapShort = false
+
+if i_vwapOn and canTrade and not orbFired and vwapCount < 2 and not na(vwapVal)
+    dist = close - vwapVal
+    near = math.abs(dist) <= i_vwapZone
+
+    if near
+        if allowedLong and dist >= 0 and close > close[1]
+            vwapLong := true
+        else if allowedShort and dist <= 0 and close < close[1]
+            vwapShort := true
+
+if vwapLong
+    strategy.entry("VWAP_L", strategy.long, qty=i_maxQty)
+    strategy.exit("VWAP_L_X", "VWAP_L", stop=close - i_vwapStop, limit=close + i_vwapStop * i_vwapRR)
+    tToday += 1, totalT += 1, vwapCount += 1
+    label.new(bar_index, low, "VWAP", color=color.new(color.blue, 60), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+
+if vwapShort
+    strategy.entry("VWAP_S", strategy.short, qty=i_maxQty)
+    strategy.exit("VWAP_S_X", "VWAP_S", stop=close + i_vwapStop, limit=close - i_vwapStop * i_vwapRR)
+    tToday += 1, totalT += 1, vwapCount += 1
+    label.new(bar_index, high, "VWAP", color=color.new(color.blue, 60), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+// ─── C: EMA TREND TOUCH ───────────────────────────────────
+vwapFired = vwapLong or vwapShort
+emaLong  = false
+emaShort = false
+
+if i_emaOn and canTrade and not orbFired and not vwapFired and emaCount < 2 and not na(ema5)
+    dist = close - ema5
+    near = math.abs(dist) <= i_emaZone
+
+    if near
+        if allowedLong and dist >= 0 and close > close[1]
+            emaLong := true
+        else if allowedShort and dist <= 0 and close < close[1]
+            emaShort := true
+
+if emaLong
+    strategy.entry("EMA_L", strategy.long, qty=i_maxQty)
+    strategy.exit("EMA_L_X", "EMA_L", stop=close - i_emaStop, limit=close + i_emaStop * i_emaRR)
+    tToday += 1, totalT += 1, emaCount += 1
+    label.new(bar_index, low, "EMA", color=color.new(color.orange, 60), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+
+if emaShort
+    strategy.entry("EMA_S", strategy.short, qty=i_maxQty)
+    strategy.exit("EMA_S_X", "EMA_S", stop=close + i_emaStop, limit=close - i_emaStop * i_emaRR)
+    tToday += 1, totalT += 1, emaCount += 1
+    label.new(bar_index, high, "EMA", color=color.new(color.orange, 60), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+// ─── D: PREVIOUS DAY HIGH/LOW BREAK ──────────────────────
+emaFired = emaLong or emaShort
+pdhlLong  = false
+pdhlShort = false
+
+if i_pdhlOn and canTrade and not orbFired and not vwapFired and not emaFired and pdhlCount < 1 and not na(pdh)
+    if allowedLong and close > pdh + i_pdhlBuf
+        pdhlLong := true
+    else if allowedShort and close < pdl - i_pdhlBuf
+        pdhlShort := true
+
+if pdhlLong
+    strategy.entry("PDHL_L", strategy.long, qty=i_maxQty)
+    strategy.exit("PDHL_L_X", "PDHL_L", stop=close - i_pdhlStop, limit=close + i_pdhlStop * i_pdhlRR)
+    tToday += 1, totalT += 1, pdhlCount += 1
+    label.new(bar_index, low, "PDHL", color=color.new(color.purple, 60), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+
+if pdhlShort
+    strategy.entry("PDHL_S", strategy.short, qty=i_maxQty)
+    strategy.exit("PDHL_S_X", "PDHL_S", stop=close + i_pdhlStop, limit=close - i_pdhlStop * i_pdhlRR)
+    tToday += 1, totalT += 1, pdhlCount += 1
+    label.new(bar_index, high, "PDHL", color=color.new(color.purple, 60), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+// ════════════════════════════════════════════════════════════
+// EOD FLATTEN
+// ════════════════════════════════════════════════════════════
+if isEOD and strategy.position_size != 0
+    strategy.close_all(comment="EOD")
+
+// ════════════════════════════════════════════════════════════
+// VISUAL OVERLAYS
+// ════════════════════════════════════════════════════════════
+
+// ORB range
+plot(i_showORB and orbSet ? orbH : na, "ORB Hi", color=color.new(color.green, 40), linewidth=2, style=plot.style_stepline)
+plot(i_showORB and orbSet ? orbL : na, "ORB Lo", color=color.new(color.red, 40), linewidth=2, style=plot.style_stepline)
+
+// VWAP
+plot(i_showVWAP ? vwapVal : na, "VWAP", color=color.new(color.yellow, 20), linewidth=2)
+
+// 5M EMA
+plot(i_showEMA ? ema5 : na, "EMA 21", color=color.new(color.orange, 30), linewidth=1)
+
+// Previous Day H/L
+plot(i_showPDHL ? pdh : na, "Prev Day High", color=color.new(color.purple, 50), linewidth=1, style=plot.style_stepline)
+plot(i_showPDHL ? pdl : na, "Prev Day Low",  color=color.new(color.purple, 50), linewidth=1, style=plot.style_stepline)
+
+// Bias background color
+bgcolor(i_showBias and allowedLong  ? color.new(color.green, 93) : na, title="Long Bias BG")
+bgcolor(i_showBias and allowedShort ? color.new(color.red, 93)   : na, title="Short Bias BG")
+bgcolor(i_showBias and not tfAligned ? color.new(color.gray, 95) : na, title="No Alignment BG")
+
+// ════════════════════════════════════════════════════════════
+// DASHBOARD
+// ════════════════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 18, bgcolor=color.new(color.black, 80),
+                           border_color=color.gray, border_width=1)
+
+if barstate.islast
+    table.cell(dash, 0, 0, "LucidFlex MTF v6", text_color=color.white,
+               text_size=size.small, bgcolor=color.new(#58a6ff, 60))
+    table.merge_cells(dash, 0, 0, 1, 0)
+
+    // Row 1: Daily Bias
+    table.cell(dash, 0, 1, "Daily Bias", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 1, dailyBias == 1 ? "LONG" : "SHORT", text_color=dailyBias == 1 ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 2: 1H Momentum
+    table.cell(dash, 0, 2, "1H Momentum", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 2, h1Mom == 1 ? "BULL" : h1Mom == -1 ? "BEAR" : "FLAT", text_color=h1Mom == 1 ? color.green : h1Mom == -1 ? color.red : color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 3: Alignment
+    table.cell(dash, 0, 3, "Alignment", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 3, tfAligned ? (dailyBias == 1 ? "LONG" : "SHORT") : "NO ALIGN", text_color=tfAligned ? (dailyBias == 1 ? color.green : color.red) : color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 4: Separator
+    table.cell(dash, 0, 4, "── Trade ──", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 4, "──────", text_color=color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 5: Day P&L
+    table.cell(dash, 0, 5, "Day P&L", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 5, "$" + str.tostring(dayPnL, "#.00"), text_color=dayPnL >= 0 ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 6: Eval P&L
+    table.cell(dash, 0, 6, "Eval P&L", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 6, "$" + str.tostring(evalPnL, "#.00"), text_color=evalPnL >= 0 ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 7: Target
+    table.cell(dash, 0, 7, "Target", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 7, "$" + str.tostring(i_target), text_color=color.white, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 8: MLL Left
+    table.cell(dash, 0, 8, "MLL Left", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 8, "$" + str.tostring(mllR, "#.00"), text_color=mllR > 300 ? color.green : mllR > 150 ? color.yellow : color.red, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 9: Trades Today
+    table.cell(dash, 0, 9, "Trades Today", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 9, str.tostring(tToday) + "/" + str.tostring(i_maxTrades), text_color=color.white, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 10: Total Trades
+    table.cell(dash, 0, 10, "Total Trades", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 10, str.tostring(totalT), text_color=color.white, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 11: Consistency
+    table.cell(dash, 0, 11, "Consistency", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 11, str.tostring(consist * 100, "#.0") + "%", text_color=consist < 0.45 ? color.green : color.yellow, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 12: Strats separator
+    table.cell(dash, 0, 12, "── Strats ──", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 12, "──────", text_color=color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 13-16: Strategy status
+    table.cell(dash, 0, 13, "ORB", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 13, i_orbOn ? "ON (" + str.tostring(orbCount) + ")" : "OFF", text_color=i_orbOn ? color.green : color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+    table.cell(dash, 0, 14, "VWAP-PB", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 14, i_vwapOn ? "ON (" + str.tostring(vwapCount) + ")" : "OFF", text_color=i_vwapOn ? color.blue : color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+    table.cell(dash, 0, 15, "EMA-T", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 15, i_emaOn ? "ON (" + str.tostring(emaCount) + ")" : "OFF", text_color=i_emaOn ? color.orange : color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+    table.cell(dash, 0, 16, "PDHL", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 16, i_pdhlOn ? "ON (" + str.tostring(pdhlCount) + ")" : "OFF", text_color=i_pdhlOn ? color.purple : color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+    // Row 17: Status
+    table.cell(dash, 0, 17, "Status", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(dash, 1, 17, evalPnL >= i_target ? "PASSED!" : dd >= i_mll ? "MLL BLOWN" : "TRADING", text_color=evalPnL >= i_target ? color.green : dd >= i_mll ? color.red : color.green, text_size=size.tiny, text_halign=text.align_right)
+
+// ════════════════════════════════════════════════════════════
+// ALERTS
+// ════════════════════════════════════════════════════════════
+alertcondition(orbLong or orbShort,   "ORB Entry",  "MTF v6: ORB entry at {{close}}")
+alertcondition(vwapLong or vwapShort, "VWAP Entry", "MTF v6: VWAP-PB entry at {{close}}")
+alertcondition(emaLong or emaShort,   "EMA Entry",  "MTF v6: EMA-T entry at {{close}}")
+alertcondition(pdhlLong or pdhlShort, "PDHL Entry", "MTF v6: PDHL entry at {{close}}")
+alertcondition(not tfAligned[1] and tfAligned, "TF Aligned", "MTF v6: All 3 timeframes now aligned!")
+alertcondition(dd >= i_mll, "MLL Breached", "MTF v6: MLL BREACHED!")

@@ -1,0 +1,305 @@
+//@version=5
+strategy("Market Open Inversion / IFVG Entry", overlay=true, default_qty_type=strategy.fixed, default_qty_value=20)
+
+// ─────────────────────────────────────────────
+// INPUTS — ACCOUNT & RISK
+// ─────────────────────────────────────────────
+var string GROUP_ACCOUNT = "Account & Risk"
+account_size     = input.float(100000.0, "Account Size ($)",          group=GROUP_ACCOUNT, minval=1, step=1000)
+risk_mode        = input.string("Fixed Contracts", "Position Sizing Mode", group=GROUP_ACCOUNT, options=["Fixed Contracts", "% Risk Per Trade", "Fixed Dollar Risk"])
+contracts        = input.int(20,         "Contracts (Fixed mode)",    group=GROUP_ACCOUNT, minval=1)
+risk_pct         = input.float(1.0,      "Risk % Per Trade",          group=GROUP_ACCOUNT, minval=0.01, maxval=100, step=0.1)
+risk_dollar      = input.float(500.0,    "Fixed Dollar Risk",         group=GROUP_ACCOUNT, minval=1, step=50)
+tick_value       = input.float(12.50,    "Tick Value ($) — for sizing calc", group=GROUP_ACCOUNT, minval=0.01, step=0.5)
+
+// ─────────────────────────────────────────────
+// INPUTS — SESSION
+// ─────────────────────────────────────────────
+var string GROUP_SESSION = "Session"
+session_input    = input.session("0930-1700", "Market Session (Exchange TZ)", group=GROUP_SESSION)
+htf              = input.timeframe("30",      "HTF Bias Timeframe",           group=GROUP_SESSION)
+open_candle_bars = input.int(1,               "Opening Candle Bar Count",     group=GROUP_SESSION, minval=1, maxval=5)
+max_trades_day   = input.int(1,               "Max Trades Per Day",           group=GROUP_SESSION, minval=1, maxval=10)
+
+// ─────────────────────────────────────────────
+// INPUTS — ENTRY
+// ─────────────────────────────────────────────
+var string GROUP_ENTRY = "Entry Settings"
+use_ifvg         = input.bool(true,   "Use IFVG (Inversion FVG) Entry",         group=GROUP_ENTRY)
+use_50pct        = input.bool(true,   "Use 50% Candle Size Entry",               group=GROUP_ENTRY)
+pct_trigger      = input.float(50.0,  "Reversal Candle Size Trigger (% of open candle)", group=GROUP_ENTRY, minval=1, maxval=100, step=1)
+htf_bias_filter  = input.bool(true,   "Use HTF Bias Filter",                     group=GROUP_ENTRY)
+counter_trend    = input.bool(false,  "Counter Trend Mode (fade the HTF bias)",  group=GROUP_ENTRY)
+
+// ─────────────────────────────────────────────
+// INPUTS — RISK MANAGEMENT
+// ─────────────────────────────────────────────
+var string GROUP_RISK = "Risk Management"
+stop_buffer      = input.float(2.0,  "Stop Buffer Beyond Wick (ticks)",  group=GROUP_RISK, minval=0)
+tp_rr            = input.float(0.5,  "Take Profit RR",                   group=GROUP_RISK, minval=0.1, step=0.1)
+use_be           = input.bool(false, "Move SL to Break Even",             group=GROUP_RISK)
+be_trigger_rr    = input.float(0.3,  "Break Even Trigger (RR reached)",  group=GROUP_RISK, minval=0.1, step=0.1)
+use_trail        = input.bool(false, "Use Trailing Stop",                 group=GROUP_RISK)
+trail_ticks      = input.int(10,     "Trailing Stop (ticks)",             group=GROUP_RISK, minval=1)
+
+// ─────────────────────────────────────────────
+// INPUTS — FILTERS
+// ─────────────────────────────────────────────
+var string GROUP_FILTER = "Filters"
+min_open_candle_ticks = input.int(5,   "Min Opening Candle Size (ticks) — ignore tiny candles", group=GROUP_FILTER, minval=1)
+max_open_candle_ticks = input.int(500, "Max Opening Candle Size (ticks) — ignore huge candles", group=GROUP_FILTER, minval=1)
+time_cutoff      = input.bool(true,   "Stop Taking Trades After Time",    group=GROUP_FILTER)
+cutoff_hour      = input.int(11,      "Cutoff Hour (exchange time)",      group=GROUP_FILTER, minval=0, maxval=23)
+cutoff_min       = input.int(30,      "Cutoff Minute",                    group=GROUP_FILTER, minval=0, maxval=59)
+
+// ─────────────────────────────────────────────
+// INPUTS — DISPLAY
+// ─────────────────────────────────────────────
+var string GROUP_DISPLAY = "Display"
+show_fvg_boxes   = input.bool(true,  "Show FVG Zones",          group=GROUP_DISPLAY)
+show_open_box    = input.bool(true,  "Show Opening Candle Box", group=GROUP_DISPLAY)
+show_htf_lines   = input.bool(true,  "Show HTF Candle Lines",   group=GROUP_DISPLAY)
+show_table       = input.bool(true,  "Show Info Table",         group=GROUP_DISPLAY)
+open_box_extend  = input.int(30,     "Opening Candle Box Width (bars)", group=GROUP_DISPLAY, minval=1, maxval=200)
+
+// ─────────────────────────────────────────────
+// HTF BIAS
+// ─────────────────────────────────────────────
+htf_open  = request.security(syminfo.tickerid, htf, open,  lookahead=barmerge.lookahead_off)
+htf_close = request.security(syminfo.tickerid, htf, close, lookahead=barmerge.lookahead_off)
+htf_high  = request.security(syminfo.tickerid, htf, high,  lookahead=barmerge.lookahead_off)
+htf_low   = request.security(syminfo.tickerid, htf, low,   lookahead=barmerge.lookahead_off)
+
+var float htf_open_candle_high = na
+var float htf_open_candle_low  = na
+var bool  htf_bias_bull        = na
+var bool  htf_bias_set         = false
+
+htf_session_open = not na(time(timeframe.period, session_input)) and na(time(timeframe.period, session_input)[1])
+
+if htf_session_open
+    htf_open_candle_high := htf_high
+    htf_open_candle_low  := htf_low
+    htf_bias_bull        := htf_close > htf_open
+    htf_bias_set         := true
+
+// ─────────────────────────────────────────────
+// SESSION TRACKING
+// ─────────────────────────────────────────────
+in_session          = not na(time(timeframe.period, session_input))
+session_just_opened = in_session and not in_session[1]
+
+past_cutoff = time_cutoff and (hour > cutoff_hour or (hour == cutoff_hour and minute >= cutoff_min))
+
+// ─────────────────────────────────────────────
+// OPENING CANDLE
+// ─────────────────────────────────────────────
+var float open_candle_high = na
+var float open_candle_low  = na
+var float open_candle_size = na
+var bool  open_candle_bull = na
+var int   bar_count_in_sess = 0
+var int   trades_today      = 0
+var bool  setup_active      = false
+
+if session_just_opened
+    open_candle_high  := na
+    open_candle_low   := na
+    open_candle_size  := na
+    open_candle_bull  := na
+    bar_count_in_sess := 0
+    trades_today      := 0
+    setup_active      := false
+
+if in_session
+    bar_count_in_sess += 1
+
+if in_session and bar_count_in_sess == open_candle_bars
+    float candle_size_ticks = (high - low) / syminfo.mintick
+    if candle_size_ticks >= min_open_candle_ticks and candle_size_ticks <= max_open_candle_ticks
+        open_candle_high := high
+        open_candle_low  := low
+        open_candle_size := high - low
+        open_candle_bull := close > open
+        setup_active     := true
+
+// ─────────────────────────────────────────────
+// POSITION SIZING
+// ─────────────────────────────────────────────
+f_get_qty(sl_distance) =>
+    if risk_mode == "Fixed Contracts"
+        contracts
+    else if risk_mode == "% Risk Per Trade"
+        dollar_risk = account_size * (risk_pct / 100.0)
+        sl_ticks    = sl_distance / syminfo.mintick
+        qty         = math.floor(dollar_risk / (sl_ticks * tick_value))
+        math.max(qty, 1)
+    else  // Fixed Dollar Risk
+        sl_ticks = sl_distance / syminfo.mintick
+        qty      = math.floor(risk_dollar / (sl_ticks * tick_value))
+        math.max(qty, 1)
+
+// ─────────────────────────────────────────────
+// IFVG DETECTION
+// ─────────────────────────────────────────────
+raw_bull_fvg = high[2] < low[0]
+raw_bear_fvg = low[2]  > high[0]
+
+var float stored_bull_fvg_top = na
+var float stored_bull_fvg_bot = na
+var float stored_bear_fvg_top = na
+var float stored_bear_fvg_bot = na
+var bool  bull_fvg_active     = false
+var bool  bear_fvg_active     = false
+
+if raw_bull_fvg and setup_active
+    stored_bull_fvg_top := low[0]
+    stored_bull_fvg_bot := high[2]
+    bull_fvg_active     := true
+
+if raw_bear_fvg and setup_active
+    stored_bear_fvg_top := low[2]
+    stored_bear_fvg_bot := high[0]
+    bear_fvg_active     := true
+
+bull_ifvg = bear_fvg_active and close >= stored_bear_fvg_bot and close <= stored_bear_fvg_top and close > open
+bear_ifvg = bull_fvg_active and close >= stored_bull_fvg_bot and close <= stored_bull_fvg_top and close < open
+
+if bull_ifvg
+    bear_fvg_active := false
+if bear_ifvg
+    bull_fvg_active := false
+
+// ─────────────────────────────────────────────
+// 50% CANDLE TRIGGER
+// ─────────────────────────────────────────────
+current_candle_size  = high - low
+pct_threshold        = open_candle_size * (pct_trigger / 100.0)
+bull_reversal_candle = (close > open) and (current_candle_size >= pct_threshold)
+bear_reversal_candle = (close < open) and (current_candle_size >= pct_threshold)
+
+// ─────────────────────────────────────────────
+// BIAS LOGIC
+// counter_trend flips which direction we trade
+// ─────────────────────────────────────────────
+bias_available = not htf_bias_filter or htf_bias_set
+take_long      = not htf_bias_filter or (counter_trend ? htf_bias_bull  : not htf_bias_bull)
+take_short     = not htf_bias_filter or (counter_trend ? not htf_bias_bull : htf_bias_bull)
+
+// ─────────────────────────────────────────────
+// ENTRY CONDITIONS
+// ─────────────────────────────────────────────
+can_trade = setup_active and in_session and bar_count_in_sess > open_candle_bars and trades_today < max_trades_day and strategy.position_size == 0 and bias_available and not past_cutoff
+
+long_ifvg_signal   = can_trade and take_long and use_ifvg  and bull_ifvg
+long_50pct_signal  = can_trade and take_long and use_50pct and bull_reversal_candle
+short_ifvg_signal  = can_trade and take_short and use_ifvg  and bear_ifvg
+short_50pct_signal = can_trade and take_short and use_50pct and bear_reversal_candle
+
+long_entry  = long_ifvg_signal  or long_50pct_signal
+short_entry = short_ifvg_signal or short_50pct_signal
+
+// ─────────────────────────────────────────────
+// EXECUTE ENTRIES
+// ─────────────────────────────────────────────
+if long_entry
+    sl      = low  - (stop_buffer * syminfo.mintick)
+    tp      = close + ((close - sl) * tp_rr)
+    qty     = f_get_qty(close - sl)
+    be_lvl  = use_be    ? close + ((close - sl) * be_trigger_rr) : na
+    t_dist  = use_trail ? trail_ticks * syminfo.mintick           : na
+    strategy.entry("Long", strategy.long, qty=qty)
+    strategy.exit("Long Exit", "Long", stop=sl, limit=tp, trail_points=use_trail ? trail_ticks : na, trail_offset=use_trail ? trail_ticks : na)
+    trades_today += 1
+
+if short_entry
+    sl      = high + (stop_buffer * syminfo.mintick)
+    tp      = close - ((sl - close) * tp_rr)
+    qty     = f_get_qty(sl - close)
+    strategy.entry("Short", strategy.short, qty=qty)
+    strategy.exit("Short Exit", "Short", stop=sl, limit=tp, trail_points=use_trail ? trail_ticks : na, trail_offset=use_trail ? trail_ticks : na)
+    trades_today += 1
+
+// ─────────────────────────────────────────────
+// VISUALS
+// ─────────────────────────────────────────────
+var box open_box   = na
+var box bull_fvg_box = na
+var box bear_fvg_box = na
+
+if show_open_box and in_session and bar_count_in_sess == open_candle_bars and setup_active
+    box.delete(open_box)
+    open_box := box.new(bar_index, open_candle_high, bar_index + open_box_extend, open_candle_low,
+         border_color=color.new(color.yellow, 0), border_width=2,
+         bgcolor=color.new(color.yellow, 88))
+    dir_str = open_candle_bull ? "▲ BULL" : "▼ BEAR"
+    label.new(bar_index, open_candle_high,
+         "Open Candle  " + dir_str + "  Size: " + str.tostring(math.round(open_candle_size / syminfo.mintick, 1)) + " ticks",
+         style=label.style_label_down, color=color.new(color.yellow, 20),
+         textcolor=color.black, size=size.small)
+
+if show_fvg_boxes
+    if raw_bull_fvg and setup_active
+        box.delete(bull_fvg_box)
+        bull_fvg_box := box.new(bar_index - 2, stored_bull_fvg_top, bar_index + 10, stored_bull_fvg_bot,
+             border_color=color.new(color.lime, 40), border_width=1,
+             bgcolor=color.new(color.lime, 85))
+    if raw_bear_fvg and setup_active
+        box.delete(bear_fvg_box)
+        bear_fvg_box := box.new(bar_index - 2, stored_bear_fvg_top, bar_index + 10, stored_bear_fvg_bot,
+             border_color=color.new(color.red, 40), border_width=1,
+             bgcolor=color.new(color.red, 85))
+
+if long_entry
+    reason = long_ifvg_signal ? "BULL IFVG" : "50% Bull"
+    label.new(bar_index, low, "⬆ LONG\n" + reason,
+         style=label.style_label_up, color=color.new(color.lime, 10),
+         textcolor=color.black, size=size.normal)
+
+if short_entry
+    reason = short_ifvg_signal ? "BEAR IFVG" : "50% Bear"
+    label.new(bar_index, high, "⬇ SHORT\n" + reason,
+         style=label.style_label_down, color=color.new(color.red, 10),
+         textcolor=color.white, size=size.normal)
+
+bgcolor(bull_ifvg and setup_active ? color.new(color.lime, 92) : na, title="Bull IFVG Bar")
+bgcolor(bear_ifvg and setup_active ? color.new(color.red,  92) : na, title="Bear IFVG Bar")
+
+plot(setup_active ? open_candle_high : na, "Open Candle High", color=color.new(color.yellow, 40), style=plot.style_linebr, linewidth=1)
+plot(setup_active ? open_candle_low  : na, "Open Candle Low",  color=color.new(color.yellow, 40), style=plot.style_linebr, linewidth=1)
+
+plot(show_htf_lines and htf_bias_set ? htf_open_candle_high : na, "HTF Open High", color=color.new(color.orange, 40), style=plot.style_linebr, linewidth=1)
+plot(show_htf_lines and htf_bias_set ? htf_open_candle_low  : na, "HTF Open Low",  color=color.new(color.orange, 40), style=plot.style_linebr, linewidth=1)
+
+// ─────────────────────────────────────────────
+// INFO TABLE
+// ─────────────────────────────────────────────
+var table info = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 60), border_color=color.gray, border_width=1)
+
+if show_table and barstate.islast
+    oc_dir  = na(open_candle_bull) ? "—" : open_candle_bull ? "BULLISH" : "BEARISH"
+    oc_sz   = na(open_candle_size) ? "—" : str.tostring(math.round(open_candle_size / syminfo.mintick, 1)) + " ticks"
+    thr     = na(open_candle_size) ? "—" : str.tostring(math.round(open_candle_size * pct_trigger / 100.0 / syminfo.mintick, 1)) + " ticks"
+    htf_dir = na(htf_bias_bull)    ? "—" : htf_bias_bull ? "BULLISH" : "BEARISH"
+    sizing  = risk_mode == "Fixed Contracts" ? str.tostring(contracts) + " cts" : risk_mode == "% Risk Per Trade" ? str.tostring(risk_pct) + "% risk" : "$" + str.tostring(risk_dollar)
+
+    table.cell(info, 0, 0, "MARKET OPEN SETUP",       text_color=color.yellow, bgcolor=color.new(color.black, 40), text_size=size.small)
+    table.cell(info, 1, 0, "",                         text_color=color.yellow, bgcolor=color.new(color.black, 40))
+    table.cell(info, 0, 1, "HTF Bias (" + htf + "m)", text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 1, htf_dir,                   text_color=na(htf_bias_bull) ? color.gray : htf_bias_bull ? color.lime : color.red, text_size=size.small)
+    table.cell(info, 0, 2, "Open Candle",              text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 2, oc_dir,                    text_color=color.yellow, text_size=size.small)
+    table.cell(info, 0, 3, "Open Candle Size",         text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 3, oc_sz,                     text_color=color.aqua,   text_size=size.small)
+    table.cell(info, 0, 4, "50% Trigger",              text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 4, thr,                       text_color=color.aqua,   text_size=size.small)
+    table.cell(info, 0, 5, "Sizing Mode",              text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 5, sizing,                    text_color=color.lime,   text_size=size.small)
+    table.cell(info, 0, 6, "Account Size",             text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 6, "$" + str.tostring(account_size, "#,###"), text_color=color.lime, text_size=size.small)
+    table.cell(info, 0, 7, "Trades Today",             text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 7, str.tostring(trades_today) + " / " + str.tostring(max_trades_day), text_color=color.lime, text_size=size.small)
+    table.cell(info, 0, 8, "Past Cutoff",              text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 8, past_cutoff ? "YES" : "NO", text_color=past_cutoff ? color.red : color.lime, text_size=size.small)
+    table.cell(info, 0, 9, "Setup Active",             text_color=color.white,  text_size=size.small)
+    table.cell(info, 1, 9, setup_active ? "YES" : "NO", text_color=setup_active ? color.lime : color.red, text_size=size.small)

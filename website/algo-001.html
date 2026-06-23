@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ALGO_001 — Market Open Inversion / IFVG</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="style.css" rel="stylesheet">
+</head>
+<body>
+
+<nav>
+  <div class="nav-logo" onclick="window.location.href='index.html'">
+    <div class="nav-logo-dot"></div>
+    ALGO LAB
+  </div>
+  <a class="nav-back" href="index.html">← ALL ALGOS</a>
+</nav>
+
+<div class="detail-hero">
+  <div class="detail-breadcrumb">ALGO LAB <span>/</span> ALGO_001</div>
+  <div class="detail-toprow">
+    <div>
+      <div class="detail-title">Market Open<br><em>Inversion / IFVG</em></div>
+      <div class="detail-subtitle">Identifies the session opening candle direction, then enters a counter-trend position when price shows either a 3-bar inversion fair value gap or a 50%+ reversal candle. Gated by an HTF bias filter.</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:0.5rem;align-self:flex-end">
+      <span class="status-badge s-live" style="font-size:0.65rem;padding:0.35rem 0.8rem">● BACKTESTED</span>
+      <span class="status-badge s-dev" style="font-size:0.65rem;padding:0.35rem 0.8rem">FWD TEST NEXT</span>
+    </div>
+  </div>
+
+  <div class="detail-kpis">
+    <div class="kpi"><div class="kpi-val kv-g">94%</div><div class="kpi-label">Win Rate (NYSE)</div></div>
+    <div class="kpi"><div class="kpi-val kv-g">+168%</div><div class="kpi-label">Total Return</div></div>
+    <div class="kpi"><div class="kpi-val kv-a">$2,600</div><div class="kpi-label">Max Drawdown</div></div>
+    <div class="kpi"><div class="kpi-val kv-b">200</div><div class="kpi-label">Trades Sampled</div></div>
+  </div>
+</div>
+
+<div class="detail-body">
+
+  <!-- HOW IT WORKS -->
+  <div class="detail-grid">
+    <div class="block detail-full">
+      <div class="block-head">
+        <div class="block-title">HOW IT WORKS</div>
+      </div>
+      <div class="block-body">
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-title">Capture the Opening Candle</div>
+              <div class="step-desc">On session open (default 09:30 EST), the script records the first candle's high, low, direction (bull/bear), and absolute size in ticks. This candle defines the "bias" for that day — if it's bearish, we're looking for longs; if bullish, we're looking for shorts.</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-title">Check HTF Bias (30m)</div>
+              <div class="step-desc">Before any entry is allowed, the script checks the 30-minute chart's opening candle direction as a macro filter. This prevents trading against a strong HTF trend and reduces false signals. Configurable via counter-trend mode.</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <div class="step-title">Watch for Trigger A — Inversion FVG (IFVG)</div>
+              <div class="step-desc">A 3-bar Fair Value Gap forms when bar[2].high &lt; bar[0].low (bullish gap) or bar[2].low &gt; bar[0].high (bearish gap). The script stores this zone. An inversion fires when price later closes back inside the gap from the opposite direction with a confirming close — e.g. price dips into a bullish FVG with a bearish close = bearish IFVG signal.</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <div class="step-title">Watch for Trigger B — 50% Reversal Candle</div>
+              <div class="step-desc">Any subsequent candle that is ≥ 50% the size of the opening candle in the opposite direction triggers an entry. Example: 100 tick bearish open candle → a 50+ tick bullish candle = long entry. The threshold is configurable.</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">5</div>
+            <div class="step-content">
+              <div class="step-title">Entry, Stop Loss & Take Profit</div>
+              <div class="step-desc">Entry at close of trigger candle. Stop loss placed at the wick extreme of the entry candle (low for longs, high for shorts) plus a configurable tick buffer. Take profit is set at 0.5× the risk distance (negative RR — high WR, small winners). Break-even and trailing stop options available.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATS + EDGE ANALYSIS -->
+  <div class="detail-grid">
+
+    <div class="block">
+      <div class="block-head">
+        <div class="block-title">BACKTEST STATISTICS</div>
+        <span style="font-family:var(--mono);font-size:0.55rem;color:var(--faint)">JAN 2024 — APR 2025</span>
+      </div>
+      <div class="block-body">
+        <div class="stat-row"><span class="stat-row-label">Account Size</span><span class="stat-row-val">$50,000</span></div>
+        <div class="stat-row"><span class="stat-row-label">Net Profit (NYSE)</span><span class="stat-row-val g">+$84,000</span></div>
+        <div class="stat-row"><span class="stat-row-label">Net Profit (London)</span><span class="stat-row-val g">+$130,000</span></div>
+        <div class="stat-row"><span class="stat-row-label">Win Rate (NYSE)</span><span class="stat-row-val g">94% (188/200)</span></div>
+        <div class="stat-row"><span class="stat-row-label">Win Rate (London)</span><span class="stat-row-val g">93.7% (291/311)</span></div>
+        <div class="stat-row"><span class="stat-row-label">Max Drawdown</span><span class="stat-row-val a">$2,600 (5.2%)</span></div>
+        <div class="stat-row"><span class="stat-row-label">MDD Occurred</span><span class="stat-row-val">First 5 trades</span></div>
+        <div class="stat-row"><span class="stat-row-label">Take Profit RR</span><span class="stat-row-val">0.5:1</span></div>
+        <div class="stat-row"><span class="stat-row-label">SL Location</span><span class="stat-row-val">Entry candle wick</span></div>
+        <div class="stat-row"><span class="stat-row-label">Instrument</span><span class="stat-row-val">MNQ (Micro Nasdaq)</span></div>
+        <div class="stat-row"><span class="stat-row-label">Timeframe</span><span class="stat-row-val">5M entry / 30M bias</span></div>
+        <div class="stat-row"><span class="stat-row-label">Contracts</span><span class="stat-row-val">20 (default)</span></div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <div class="block-title">EDGE ANALYSIS</div>
+      </div>
+      <div class="block-body" style="display:flex;flex-direction:column;gap:1rem">
+        <p class="analysis-text">
+          <strong>Why does this work?</strong> The opening candle on futures markets — especially MNQ — is frequently driven by overnight positioning, pre-market news, and institutional order flow. Price often makes an <span class="hl">exaggerated initial move</span> to sweep liquidity before reversing to the true intraday direction.
+        </p>
+        <p class="analysis-text">
+          The IFVG entry specifically targets the moment when price <strong>returns to fill an imbalance</strong> created by that initial move, which is a well-documented institutional behaviour in ICT / Smart Money Concepts. The 50% candle trigger is a simpler momentum-based confirmation of the same reversal.
+        </p>
+        <p class="analysis-text">
+          The <span class="hl">0.5 RR take profit</span> is intentional — it prioritises win rate over profit per trade, which makes the strategy psychologically easier to follow and keeps the equity curve smooth. The trade-off is that one loss requires two wins to recover.
+        </p>
+        <p class="analysis-text">
+          The <strong>break-even + trailing stop</strong> combination is doing significant work. These features protect winners and are a major contributor to the 94% WR — without them, raw entry quality may be lower.
+        </p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- SESSION COMPARE + EQUITY -->
+  <div class="detail-grid">
+
+    <div class="block">
+      <div class="block-head">
+        <div class="block-title">SESSION COMPARISON</div>
+      </div>
+      <div class="block-body">
+        <div class="session-compare">
+          <div class="sess-card" style="background:rgba(0,229,160,0.04);border-color:rgba(0,229,160,0.15)">
+            <div class="sess-name">NYSE OPEN · 09:30–17:00 EST</div>
+            <div class="sess-pnl">+$84,000</div>
+            <div class="sess-stat">WIN RATE &nbsp;&nbsp; 94.0%</div>
+            <div class="sess-stat">TRADES &nbsp;&nbsp;&nbsp;&nbsp; 200</div>
+            <div class="sess-stat">WINS &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 188</div>
+            <div class="sess-stat">LOSSES &nbsp;&nbsp;&nbsp;&nbsp; 12</div>
+          </div>
+          <div class="sess-card" style="background:rgba(61,111,255,0.04);border-color:rgba(61,111,255,0.15)">
+            <div class="sess-name">LONDON OPEN · 03:00–08:00 EST</div>
+            <div class="sess-pnl" style="color:var(--blue)">+$130,000</div>
+            <div class="sess-stat">WIN RATE &nbsp;&nbsp; 93.7%</div>
+            <div class="sess-stat">TRADES &nbsp;&nbsp;&nbsp;&nbsp; 311</div>
+            <div class="sess-stat">WINS &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 291</div>
+            <div class="sess-stat">LOSSES &nbsp;&nbsp;&nbsp;&nbsp; 20</div>
+          </div>
+        </div>
+        <div style="margin-top:1rem">
+          <div class="callout callout-good">
+            <div class="callout-icon">✓</div>
+            <div>Near-identical WR across two completely different sessions with zero parameter changes — this is one of the strongest signals against curve fitting.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <div class="block-title">EQUITY CURVE (SIMULATED)</div>
+      </div>
+      <div class="block-body">
+        <div class="chart-wrap">
+          <canvas id="eqChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- RISKS + SETTINGS -->
+  <div class="detail-grid">
+
+    <div class="block">
+      <div class="block-head">
+        <div class="block-title">KNOWN RISKS & LIMITATIONS</div>
+      </div>
+      <div class="block-body" style="display:flex;flex-direction:column;gap:0.75rem">
+        <div class="callout callout-warn">
+          <div class="callout-icon">⚠</div>
+          <div>Data covers Jan 2024–Apr 2025 only — a predominantly bullish macro environment. Strategy is untested in a bear market or sustained chop.</div>
+        </div>
+        <div class="callout callout-warn">
+          <div class="callout-icon">⚠</div>
+          <div>Break-even and trailing stop are doing significant work. Raw entry quality without these features is unknown — consider testing with both off.</div>
+        </div>
+        <div class="callout callout-warn">
+          <div class="callout-icon">⚠</div>
+          <div>Backtest slippage and commission not fully accounted for. At 20 MNQ contracts, round-trip costs ≈ $20–40 per trade.</div>
+        </div>
+        <div class="callout callout-info">
+          <div class="callout-icon">ℹ</div>
+          <div>request.security() with lookahead=off can still exhibit subtle data leakage in certain bar contexts on TradingView. Forward testing will confirm.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <div class="block-title">CONFIGURABLE SETTINGS</div>
+      </div>
+      <div class="block-body">
+        <div class="stat-row"><span class="stat-row-label">Account Size</span><span class="stat-row-val">$100,000 default</span></div>
+        <div class="stat-row"><span class="stat-row-label">Position Sizing</span><span class="stat-row-val">Fixed / % Risk / $ Risk</span></div>
+        <div class="stat-row"><span class="stat-row-label">Tick Value</span><span class="stat-row-val">$0.50 for MNQ</span></div>
+        <div class="stat-row"><span class="stat-row-label">Session Time</span><span class="stat-row-val">Any session</span></div>
+        <div class="stat-row"><span class="stat-row-label">HTF Bias TF</span><span class="stat-row-val">Default 30m</span></div>
+        <div class="stat-row"><span class="stat-row-label">Entry Triggers</span><span class="stat-row-val">IFVG + 50% (toggle)</span></div>
+        <div class="stat-row"><span class="stat-row-label">TP RR</span><span class="stat-row-val">Default 0.5:1</span></div>
+        <div class="stat-row"><span class="stat-row-label">SL Buffer</span><span class="stat-row-val">2 ticks default</span></div>
+        <div class="stat-row"><span class="stat-row-label">Break Even</span><span class="stat-row-val">Optional</span></div>
+        <div class="stat-row"><span class="stat-row-label">Trailing Stop</span><span class="stat-row-val">Optional</span></div>
+        <div class="stat-row"><span class="stat-row-label">Time Cutoff</span><span class="stat-row-val">11:30 default</span></div>
+        <div class="stat-row"><span class="stat-row-label">Max Trades/Day</span><span class="stat-row-val">1 default</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- PINE CODE -->
+  <div class="block" style="margin-bottom:1.5rem">
+    <div class="block-head">
+      <div class="block-title">PINE SCRIPT SOURCE — V1.0</div>
+      <button class="copy-btn" id="copy-btn">COPY CODE</button>
+    </div>
+    <div class="code-block">
+      <div class="code-topbar">
+        <div class="code-dots"><i></i><i></i><i></i></div>
+        <span class="code-file">market_open_inversion_ifvg.pine</span>
+        <span style="font-family:var(--mono);font-size:0.55rem;color:var(--faint)">Pine Script v5</span>
+      </div>
+      <pre id="pine-pre"></pre>
+    </div>
+  </div>
+
+  <!-- NEXT STEPS -->
+  <div class="callout callout-info" style="margin-bottom:1.5rem">
+    <div class="callout-icon">→</div>
+    <div><strong style="color:var(--text)">Next step:</strong> Forward test on a sim account for 30+ days on both sessions before considering live deployment. Validate that fill prices match backtest assumptions and that the IFVG signal doesn't repaint on unconfirmed bars.</div>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
