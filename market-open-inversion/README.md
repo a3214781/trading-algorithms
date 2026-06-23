@@ -33,8 +33,8 @@ The system combines:
 ┌─────────────────────────────────────────────┐
 │              30 MIN OPEN BIAS               │
 │                                             │
-│ Bullish candle → bullish bias                │
-│ Bearish candle → bearish bias                │
+│ Bullish candle → bullish bias               │
+│ Bearish candle → bearish bias               │
 └──────────────────────┬──────────────────────┘
                        │
                        ▼

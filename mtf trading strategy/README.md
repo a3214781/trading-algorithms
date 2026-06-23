@@ -16,17 +16,17 @@ Built in **Pine Script v5** (TradingView) and **Python 3** (backtester).
                        │ must agree
 ┌──────────────────────▼──────────────────────────────────┐
 │                   1-HOUR TIMEFRAME                      │
-│      9/21 EMA momentum → BULLISH, BEARISH, or FLAT     │
+│      9/21 EMA momentum → BULLISH, BEARISH, or FLAT      │
 └──────────────────────┬──────────────────────────────────┘
                        │ must agree
 ┌──────────────────────▼──────────────────────────────────┐
 │                  5-MINUTE TIMEFRAME                     │
 │              Entry triggers (bias direction only)       │
 │                                                         │
-│   ┌─────────┐  ┌──────────┐  ┌───────┐  ┌──────────┐  │
-│   │   ORB   │  │ VWAP     │  │ EMA   │  │ Prev Day │  │
-│   │Breakout │  │ Pullback │  │ Touch │  │ H/L Break│  │
-│   └─────────┘  └──────────┘  └───────┘  └──────────┘  │
+│   ┌─────────┐  ┌──────────┐  ┌───────┐  ┌──────────┐    │
+│   │   ORB   │  │ VWAP     │  │ EMA   │  │ Prev Day │    │
+│   │Breakout │  │ Pullback │  │ Touch │  │ H/L Break│    │
+│   └─────────┘  └──────────┘  └───────┘  └──────────┘    │
 └─────────────────────────────────────────────────────────┘
 ```
 
