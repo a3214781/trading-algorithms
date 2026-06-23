@@ -174,4 +174,5 @@ Designed and tested for **LucidFlex 25K evaluation accounts** (Lucid Trading):
 This is a backtested strategy for educational and portfolio purposes. Past performance does not guarantee future results. Futures trading involves substantial risk of loss. Always paper trade before deploying real capital.
 
 ## License
-MIT
+
+MIT 

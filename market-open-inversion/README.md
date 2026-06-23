@@ -324,8 +324,9 @@ Forward testing is recommended before using real capital.
 
 # Disclaimer
 
-This project is for educational and research purposes only.
+This is a backtested strategy for educational and portfolio purposes. Past performance does not guarantee future results. Futures trading involves substantial risk of loss. Always paper trade before deploying real capital.
 
-Past performance does not guarantee future results.
 
-Futures trading involves substantial risk and possible loss of capital.
+## License
+
+MIT 
